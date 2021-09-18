@@ -4,14 +4,13 @@
 #include<netinet/in.h>
 #include<arpa/inet.h>
 #include<sys/socket.h>
-
+#include <stddef.h>
 
 #define BUFFER_SIZE 256
 
 #define HEADER_SIZE 4
 #define USER_ID_SIZE 2
 #define MAX_USER_COUNT 5
-#define LOG_IN_ACK_SIZE (HEADER_SIZE+2)
 
 enum typeEnum
 {
@@ -19,6 +18,48 @@ enum typeEnum
     USER_INFO,
 
 };
+
+#pragma pack(1)
+struct msgHeader
+{
+	short type;
+	short res;
+};
+
+//登录消息体
+struct msgBodyLogin
+{
+    char name;
+};
+struct msgLogin
+{
+    msgHeader header;
+    msgBodyLogin body;
+};
+
+//登录ACK消息
+struct msgBodyLoginAck
+{
+    short id;
+};
+struct msgLoginAck
+{
+    msgHeader header;
+    msgBodyLoginAck body;
+};
+
+//用户信息消息体
+struct msgBodyUserInfo
+{
+    short id;
+    char name;
+};
+struct msgUserInfo
+{
+    msgHeader header;
+    msgBodyUserInfo body;
+};
+#pragma pack()
 
 struct struUser
 {
@@ -36,36 +77,34 @@ struUser users[5];
 struct sockaddr_in addrCli;
 socklen_t addrlen;
 
-short getMsgType(char* buffer)
-{
 
-    return *((short*)buffer);
+int setMsgUserName(struct msgUserInfo *msg, struUser *user)
+{
+    int nameOffset = offsetof(struct msgUserInfo, body) + offsetof(struct msgBodyUserInfo, name);
+    memcpy(&(msg->body.name), user->name, user->name_len);
+    return nameOffset + user->name_len;
 }
 
-void setMsgType(char* buffer, short type)
+void copyNameIntoUser(struct msgLogin *msg, int len, struUser *user)
 {
-    *((short*)buffer) = type;
+    int name_len = len - offsetof(struct msgLogin, body) - offsetof(struct msgBodyLogin, name);
+    memcpy(user->name, &(msg->body.name), name_len);
+    user->name_len = name_len;
 }
 
-void setMsgUserId(char* buffer, short id)
+int getValidUserId(msgLogin *msg)
 {
-    *((short*)(buffer + HEADER_SIZE)) = id;
-}
-
-int setMsgUserName(char* buffer, struUser *user)
-{
-    memcpy(buffer + HEADER_SIZE + USER_ID_SIZE, user->name, user->name_len);
-    return HEADER_SIZE + USER_ID_SIZE + user->name_len;
-}
-
-void copyNameIntoUser(char* buffer, int len, struUser *user)
-{
-    memcpy(user->name, buffer + HEADER_SIZE, len - HEADER_SIZE);
-    user->name_len = len - HEADER_SIZE;
-}
-
-int getValidUserId()
-{
+    /*重复登录*/
+    /*暂时用用户名区别，后续使用openid*/
+    for (int i = 0; i < MAX_USER_COUNT; i++)
+    {
+        if (users[i].login == true)
+        {
+            if(0==memcmp(&msg->body.name, users[i].name, users[i].name_len))
+                return i;
+        }
+        
+    }
 
     for (int i = 0; i < MAX_USER_COUNT; i++)
     {
@@ -80,37 +119,46 @@ int getValidUserId()
 void handMsg(char* buffer, int len)
 {
     char sendbuf[BUFFER_SIZE];    //申请一个发送数据缓存区
-
     int sendLen = 0;
     int id = -1;
 
-    short type = getMsgType(buffer);
+
+    msgHeader *pRecvHead = (msgHeader *)buffer;
+    msgHeader *pSendHead = (msgHeader *)sendbuf;
+    short type = pRecvHead->type;
     if (LOG_IN == type)
     {
-        id = getValidUserId();
+        msgLogin *pRecvLogin = (msgLogin *)buffer;
+        id = getValidUserId(pRecvLogin);
         if (id != -1)
         {
-            copyNameIntoUser(buffer, len, &users[id]);
-            setMsgUserId(buffer, id);
+
+            msgLoginAck *pMsgLoginAck = (msgLoginAck *)sendbuf;
+
+            copyNameIntoUser(pRecvLogin, len, &users[id]);
+            pMsgLoginAck->body.id = id;
+            pMsgLoginAck->header.type = LOG_IN;
             printf("send login response\n");
-            sendto(sockSer, buffer, LOG_IN_ACK_SIZE, 0, (struct sockaddr*)&addrCli, addrlen);    //向客户端发送数据
+            //printf("Q%c Q%c Q%c Q%c Q%c Q%c Q%c Q%c Q%c \n", )
+            sendto(sockSer, sendbuf, sizeof(msgLoginAck), 0, (struct sockaddr*)&addrCli, addrlen);    //向客户端发送数据
             users[id].login = true;
             users[id].sock = addrCli;
 
+            msgUserInfo *pSendMsgUserInfo = (msgUserInfo *)sendbuf;
             for (int i = 0; i < MAX_USER_COUNT; i++)
             {
                 if (users[i].login == false) continue;
                 if (id == i) continue;
 
-                setMsgType(sendbuf, USER_INFO);
-                setMsgUserId(sendbuf, i);
-                sendLen = setMsgUserName(sendbuf, &users[i]);
+                pSendHead->type = USER_INFO;
+                pSendMsgUserInfo->body.id = i;
+                sendLen = setMsgUserName(pSendMsgUserInfo, &users[i]);
                 printf("send info of user[%d] to [%d]\n", i, id);
                 sendto(sockSer, sendbuf, sendLen, 0, (struct sockaddr*)&addrCli, addrlen);    //向客户端发送数据
 
-                setMsgType(sendbuf, USER_INFO);
-                setMsgUserId(sendbuf, id);
-                sendLen = setMsgUserName(sendbuf, &users[id]);
+                pSendHead->type = USER_INFO;
+                pSendMsgUserInfo->body.id = id;
+                sendLen = setMsgUserName(pSendMsgUserInfo, &users[id]);
                 printf("send info of user[%d] to [%d]\n", id, i);
                 sendto(sockSer, sendbuf, sendLen, 0, (struct sockaddr*)&users[i].sock, addrlen);    //向客户端发送数据
             }
