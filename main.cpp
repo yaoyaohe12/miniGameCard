@@ -5,18 +5,33 @@
 #include<arpa/inet.h>
 #include<sys/socket.h>
 #include <stddef.h>
+#include <vector>
+#include <ctime>
+#include <random>
+#include <iostream>
+#include <algorithm>
+#include <set>
+using namespace std;
 
 #define BUFFER_SIZE 256
 
 #define HEADER_SIZE 4
 #define USER_ID_SIZE 2
-#define MAX_USER_COUNT 5
+#define MAX_USER_COUNT 6
+#define MIN_USER_COUNT 4 //最少X人开局
+
+#define MAX_CARD_NUM 13 //A=1, 2=2 ... K=13
+#define CARD_REPEAT 4 //重复4个
+#define MAX_CARD_COUNT (13*CARD_REPEAT+2)//每幅牌的个数
+#define MAX_PACK_NUM 3 //最多副牌
 
 enum typeEnum
 {
     LOG_IN = 1,
     USER_INFO,
-
+    READY_INF0,
+    CARDS_INFO,
+    SHOW_CARDS_INFO
 };
 
 #pragma pack(1)
@@ -52,12 +67,37 @@ struct msgLoginAck
 struct msgBodyUserInfo
 {
     short id;
+    short readyStatus;
     char name;
 };
 struct msgUserInfo
 {
     msgHeader header;
     msgBodyUserInfo body;
+};
+
+//准备消息
+struct msgBodyReadyInfo
+{
+    short id;
+};
+struct msgReadyInfo
+{
+    msgHeader header;
+    msgBodyReadyInfo body;
+};
+
+//牌信息
+struct msgBodyCardsInfo
+{
+    short id;
+    short size; /*纸牌的张数*/
+    short cards;
+};
+struct msgCardsInfo
+{
+    msgHeader header;
+    msgBodyCardsInfo body;
 };
 #pragma pack()
 
@@ -67,16 +107,81 @@ struct struUser
     int name_len;
     int id;
     bool login;
+    bool readyStatus;
+    bool GameStatus;
     struct sockaddr_in sock;
+    //short cards[MAX_CARD_COUNT*MAX_PACK_NUM/MIN_USER_COUNT];
+    short cards[MAX_CARD_COUNT*MAX_PACK_NUM];
+    short cardSize = 0;
 };
+
 
 //创建一个套接字，并检测是否创建成功
 int sockSer = -1;
 struct sockaddr_in addrSer;  //创建一个记录地址信息的结构体 
-struUser users[5];
+struUser users[MAX_USER_COUNT];
 struct sockaddr_in addrCli;
 socklen_t addrlen;
 
+
+struct element{     //用来排序的数据结构 
+		int data;  // 数据 
+		int index;  // 序号 
+};
+
+
+int cmp(const void *a,const void *b){   // 升序排序
+	return((struct element*)a)->data - ((struct element*)b)->data;
+}
+void rand_of_n(short a[],int n){
+	int i;
+	struct element ele[MAX_CARD_COUNT*MAX_PACK_NUM];
+	srand((int)time(0));  // 初始化随机数种子 
+	for(i=0;i<n;i++){
+		ele[i].data=rand();  // 随机生成一个数 
+        ele[i].index=(i+1)%MAX_CARD_COUNT+1;
+	}
+	qsort(ele,n,sizeof(ele[0]),cmp);  //排序 
+	for(i=0;i<n;i++){
+		a[i]=ele[i].index;
+	}
+}
+
+void giveOutCard(int UserCount, int pack=2)
+{
+    
+    int cardCount = MAX_CARD_COUNT*pack;
+    short a[MAX_CARD_COUNT*MAX_PACK_NUM] = {0};
+
+    rand_of_n(a, cardCount);
+
+    // for(int i = 0;i<cardCount;i++)
+    // {
+    //     cout<<a[i]<<" ";     
+    // }
+    // cout<<endl;
+
+    for(int i = 0;i<UserCount;i++)
+    {
+        users[i].cardSize = 0;     
+    }
+
+    for(int i = 0;i<cardCount;i++)
+    {
+        users[i%UserCount].cards[i/UserCount] = a[i];     
+        users[i%UserCount].cardSize++;  
+    }
+
+    for(int i = 0;i<UserCount;i++)
+    {
+        sort(users[i].cards, users[i].cards+users[i].cardSize);
+        for(int j = 0;j<users[i].cardSize;j++)
+        {
+            cout<<users[i].cards[j]<<" ";
+        }     
+        cout<<endl;
+    }    
+}
 
 int setMsgUserName(struct msgUserInfo *msg, struUser *user)
 {
@@ -116,10 +221,64 @@ int getValidUserId(msgLogin *msg)
     return -1;
 }
 
+void sendUserInfotoClient(char *sendbuf, short usrId, short client)
+{
+    msgUserInfo *pSendMsgUserInfo = (msgUserInfo *)sendbuf;
+    
+    pSendMsgUserInfo->header.type = USER_INFO;
+    pSendMsgUserInfo->body.id = usrId;
+    pSendMsgUserInfo->body.readyStatus = users[usrId].readyStatus;
+    int sendLen = setMsgUserName(pSendMsgUserInfo, &users[usrId]);
+    printf("send LOG_IN info of user[%d] to [%d]\n", usrId, client);
+    sendto(sockSer, sendbuf, sendLen, 0, (struct sockaddr*)&users[client].sock, addrlen);    //向客户端发送数据
+}
+
+void sendCardsInfo(char *sendbuf, short usrId, short client)
+{
+    msgCardsInfo *pMsg = (msgCardsInfo *)sendbuf;
+
+    pMsg->header.type = CARDS_INFO;
+    pMsg->body.id = usrId;
+    pMsg->body.size = users[usrId].cardSize;
+    int cardsInfoLength = users[usrId].cardSize*sizeof(users[usrId].cards[0]);
+    memcpy(&pMsg->body.cards, users[usrId].cards, cardsInfoLength);
+    //int Offset = offsetof(struct msgCardsInfo, body) + offsetof(struct msgBodyCardsInfo, cards);
+    int sendLen = cardsInfoLength + (int)((char*)(&pMsg->body.cards) - (char*)pMsg);
+    printf("send CARDS_INFO info of user[%d] to user[%d], sendLen = %d\n", usrId, client, sendLen);
+    sendto(sockSer, sendbuf, sendLen, 0, (struct sockaddr*)&users[client].sock, addrlen);    //向客户端发送数据
+}
+
+void differenceCards(int UserId, short * arr, int size)
+{
+	multiset<int> iset1(users[UserId].cards, users[UserId].cards + users[UserId].cardSize);
+	multiset<int> iset2(arr, arr + size);
+	int ivec[MAX_CARD_COUNT*MAX_PACK_NUM];
+	auto iter = set_difference(iset1.begin(), iset1.end(), iset2.begin(), iset2.end(), ivec);	//ivec为：2,3,5,6,7
+	users[UserId].cardSize = (int)(iter - ivec);
+
+    printf("update user[%d] cards: ", UserId);
+	for (int i=0;i<users[UserId].cardSize;i++)
+	{
+		cout << ivec[i] << " ";
+	}
+}
+
+void printBuff(char* buffer, int len)
+{
+    short *p =  (short *)(buffer);
+    
+    printf("printBuff\n");
+    for(int i = 0 ;i<len/2;i++)
+    {
+        short val = *(p+i);
+        printf("%d ", val);
+    }
+    printf("printBuff end\n");
+}
+
 void handMsg(char* buffer, int len)
 {
     char sendbuf[BUFFER_SIZE];    //申请一个发送数据缓存区
-    int sendLen = 0;
     int id = -1;
 
 
@@ -144,29 +303,59 @@ void handMsg(char* buffer, int len)
             users[id].login = true;
             users[id].sock = addrCli;
 
-            msgUserInfo *pSendMsgUserInfo = (msgUserInfo *)sendbuf;
+            
             for (int i = 0; i < MAX_USER_COUNT; i++)
             {
                 if (users[i].login == false) continue;
                 if (id == i) continue;
 
-                pSendHead->type = USER_INFO;
-                pSendMsgUserInfo->body.id = i;
-                sendLen = setMsgUserName(pSendMsgUserInfo, &users[i]);
-                printf("send info of user[%d] to [%d]\n", i, id);
-                sendto(sockSer, sendbuf, sendLen, 0, (struct sockaddr*)&addrCli, addrlen);    //向客户端发送数据
-
-                pSendHead->type = USER_INFO;
-                pSendMsgUserInfo->body.id = id;
-                sendLen = setMsgUserName(pSendMsgUserInfo, &users[id]);
-                printf("send info of user[%d] to [%d]\n", id, i);
-                sendto(sockSer, sendbuf, sendLen, 0, (struct sockaddr*)&users[i].sock, addrlen);    //向客户端发送数据
+                sendUserInfotoClient(sendbuf, i, id);
+                sendUserInfotoClient(sendbuf, id, i);
             }
 
         }
 
     }
+    else if(READY_INF0 == type)
+    {
+        msgReadyInfo *pMsgReadyInfo = (msgReadyInfo *)buffer;
+        id = pMsgReadyInfo->body.id;
+        printf("receive READY_INF0 id = %d\n", pMsgReadyInfo->body.id);
+        printBuff(buffer, len);
+        users[id].readyStatus = true;
+        //转发给所有人
+        for (int i = 0; i < MAX_USER_COUNT; i++)
+        {
+            if (users[i].login == false) continue;
+            printf("send READY_INF of user[%d] to [%d]\n", pMsgReadyInfo->body.id, i);
+            sendto(sockSer, buffer, len, 0, (struct sockaddr*)&users[i].sock, addrlen);    //向客户端发送数据
+        }
+
+        //
+        giveOutCard(5, 2);
+        
+        sendCardsInfo(sendbuf, id, id);
+    }
+    else if(SHOW_CARDS_INFO == type)
+    {
+        msgCardsInfo *pReceiveMsg = (msgCardsInfo *)buffer;
+        id = pReceiveMsg->body.id;
+        printf("receive SHOW_CARDS_INFO id = %d\n", pReceiveMsg->body.id);
+        // 更新该用户的cars
+        // users[id].cards =......;DifferenceUserCards(i, , )
+        differenceCards(id, &pReceiveMsg->body.cards, pReceiveMsg->body.size);
+        //转发给所有人
+        for (int i = 0; i < MAX_USER_COUNT; i++)
+        {
+            if (users[i].login == false) continue;
+            //if (users[i].GameStatus == false) continue;
+            printf("send SHOW_CARDS_INFO of user[%d] to [%d]\n", id, i);
+            sendto(sockSer, buffer, len, 0, (struct sockaddr*)&users[i].sock, addrlen);    //向客户端发送数据
+        }      
+    }
 }
+
+
 
 int main()
 {
