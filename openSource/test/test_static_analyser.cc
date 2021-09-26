@@ -279,6 +279,12 @@ TEST_CASE("检查一手牌是不是对子 GenHandDescriptor", "[StaticAnalyserC,
         REQUIRE(target.GenHandDescriptor(input, 2) == true);
         REQUIRE(target.GetDescriptor().hand_type == kHandTypeDouble);
     }
+
+    SECTION("数组长度为２，且点数相同") {
+        int input[2] = {3, 4};
+        REQUIRE(target.GenHandDescriptor(input, 2) == true);
+        REQUIRE(target.GetDescriptor().hand_type == kHandTypeDouble);
+    }
 }
 
 
@@ -495,6 +501,14 @@ TEST_CASE("飞机，包括3带2 GenHandDescriptor", "[StaticAnalyserC, GenHandDe
     }
 
     SECTION("11111111") {
+        int input[5] = {43,45,49,51,51};
+        REQUIRE(target.GenHandDescriptor(input, 5) == true);
+        REQUIRE(target.GetDescriptor().hand_type == kHandTypeAirPlane);
+        REQUIRE(target.GetDescriptor().start_value == 12);
+        REQUIRE(target.GetDescriptor().num_of_blocks == 1);
+    }
+
+    SECTION("11111111") {
         int input[10] = {2,3,4,5,42,43,44,45,46,47};
         REQUIRE(target.GenHandDescriptor(input, 10) == true);
         REQUIRE(target.GetDescriptor().hand_type == kHandTypeAirPlane);
@@ -641,6 +655,14 @@ TEST_CASE("大小比较", "[StaticAnalyserC, IsBiggerThan]") {
         REQUIRE(target1.GenHandDescriptor(input1,sizeof(input1)/sizeof(input1[0])) == true);
         REQUIRE(target2.GenHandDescriptor(input2,sizeof(input2)/sizeof(input2[0])) == true);
         REQUIRE(target2.IsBiggerThan(&target1) == true);
+    }    
+
+    SECTION("11111111") {
+        int input1[5] = {10,11,12,13,14};  /*3带2*/
+        int input2[5] = {6,7,8,9,10}; /*3带2*/
+        REQUIRE(target1.GenHandDescriptor(input1,sizeof(input1)/sizeof(input1[0])) == true);
+        REQUIRE(target2.GenHandDescriptor(input2,sizeof(input2)/sizeof(input2[0])) == true);
+        REQUIRE(target2.IsBiggerThan(&target1) == false);
     }    
     SECTION("11111111") {
         int input1[5] = {6,7,8,9,10}; /*3带2*/

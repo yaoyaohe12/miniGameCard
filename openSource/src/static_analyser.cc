@@ -205,12 +205,16 @@ bool StaticAnalyserC::Is2HeartA(int *hand, int len)
 
 bool judgeLink(int *value , int len)
 {
-    for(int i = 0 ; i<len; i++)
+    if (len >1)
     {
-         //2不参与
-        if(value[i] == getCardValueFromWord(2))
-            return false;
+        for(int i = 0 ; i<len; i++)
+        {
+            //2不参与
+            if(value[i] == getCardValueFromWord(2))
+                return false;
+        }
     }
+
     for(int i = 0 ; i<len-1; i++)
     {
 
@@ -328,6 +332,11 @@ bool StaticAnalyserC::IsBombLink(int *hand, int len)
 
 bool StaticAnalyserC::GenHandDescriptor (int *hand, int len)
 {
+    // for(int i = 0; i<len; i++)
+    // {
+    //     printf("%d ",hand[i]);
+    // }
+    // printf("\n");
     if(len<=0)
         return false;
     if(len == 1)

@@ -19,12 +19,14 @@ using namespace std;
 #define HEADER_SIZE 4
 #define USER_ID_SIZE 2
 #define MAX_USER_COUNT 5
-#define MIN_USER_COUNT 4 //最少X人开局
 
 #define MAX_CARD_NUM 13 //A=1, 2=2 ... K=13
 #define CARD_REPEAT 4 //重复4个
 #define MAX_CARD_COUNT (13*CARD_REPEAT+2)//每幅牌的个数
 #define MAX_PACK_NUM 3 //最多副牌
+#define MAX_GAME_CARDS_NUM (MAX_CARD_COUNT*MAX_PACK_NUM)
+
+int UserNum = 5;
 
 enum typeEnum
 {
@@ -174,6 +176,9 @@ struct Game
     int round_score = 0;
     bool isCardsProduced = false;
     GameUser user[MAX_USER_COUNT];
+    short preCards[MAX_GAME_CARDS_NUM]; /*上一个玩家打出的牌*/
+    short preCardsLen = 0;
+    skrobot::StaticAnalyserC preCardsAna; /*上一个玩家打出的牌的描述*/
 };
 struct Game game;
 
@@ -268,7 +273,7 @@ int getValidUserId(msgLogin *msg)
 {
     /*重复登录*/
     /*暂时用用户名区别，后续使用openid*/
-    for (int i = 0; i < MAX_USER_COUNT; i++)
+    for (int i = 0; i < UserNum; i++)
     {
         if (users[i].login == true)
         {
@@ -278,7 +283,7 @@ int getValidUserId(msgLogin *msg)
         
     }
 
-    for (int i = 0; i < MAX_USER_COUNT; i++)
+    for (int i = 0; i < UserNum; i++)
     {
         if (users[i].login == false)
         {
@@ -353,7 +358,7 @@ void sendWhoIsNext(char *sendbuf, short usrId)
     pMsg->header.type = WHO_IS_NEXT;
     pMsg->body.id = usrId;
 
-    for (int i = 0; i < MAX_USER_COUNT; i++)
+    for (int i = 0; i < UserNum; i++)
     {
         if (users[i].login == false) continue;
         printf("send WHO_IS_NEXT info of user[%d] to user[%d]\n", usrId, i);
@@ -367,7 +372,7 @@ void sendRoundScore(char *sendbuf, int sum)
 
     pMsg->header.type = ROUND_SCORE;
     pMsg->body.sum = sum;
-    for (int i = 0; i < MAX_USER_COUNT; i++)
+    for (int i = 0; i < UserNum; i++)
     {
         if (users[i].login == false) continue;
         printf("send ROUND_SCORE info to user[%d], sum[%d]\n", i, sum);
@@ -382,7 +387,7 @@ void sendUserScore(char *sendbuf, short id)
     pMsg->header.type = USER_SCORE;
     pMsg->body.sum = game.user[id].score;
     pMsg->body.id = id;
-    for (int i = 0; i < MAX_USER_COUNT; i++)
+    for (int i = 0; i < UserNum; i++)
     {
         if (users[i].login == false) continue;
         printf("send USER_SCORE info of user[%d] to user[%d], sum[%d]\n",id, i, pMsg->body.sum);
@@ -406,6 +411,20 @@ void differenceCards(int UserId, short * arr, int size)
 	}
 }
 
+
+bool isValidCards(short *pCard, int len , skrobot::StaticAnalyserC *ana)
+{
+    int cards[MAX_GAME_CARDS_NUM];
+
+    for(int i = 0;i<len;i++)
+    {
+        short s = pCard[i];
+        cards[i] = s;
+    }
+    return ana->GenHandDescriptor(cards, len);
+}
+
+
 void printBuff(char* buffer, int len)
 {
     short *p =  (short *)(buffer);
@@ -418,6 +437,34 @@ void printBuff(char* buffer, int len)
     }
     printf("printBuff end\n");
 }
+
+int getReadyCount()
+{
+    int count = 0;
+    for(int i = 0 ;i<UserNum;i++)
+    {
+        if(users[i].readyStatus == true)
+        {
+            count++;
+        }
+    }
+    return count;
+}
+
+int getNextUser(int id)
+{
+    int i = (id+1)%UserNum;
+    for(int j = 0;i!=id,j<UserNum;j++)
+    {
+        if(users[i].cardSize !=0)
+        {
+            return i;
+        }
+        i = (i+1)%UserNum;
+    }
+    return i;
+}
+
 
 void handMsg(char* buffer, int len)
 {
@@ -447,7 +494,7 @@ void handMsg(char* buffer, int len)
             users[id].sock = addrCli;
 
             
-            for (int i = 0; i < MAX_USER_COUNT; i++)
+            for (int i = 0; i < UserNum; i++)
             {
                 if (users[i].login == false) continue;
                 if (id == i) continue;
@@ -467,7 +514,7 @@ void handMsg(char* buffer, int len)
         printBuff(buffer, len);
         users[id].readyStatus = true;
         //转发给所有人
-        for (int i = 0; i < MAX_USER_COUNT; i++)
+        for (int i = 0; i < UserNum; i++)
         {
             if (users[i].login == false) continue;
             printf("send READY_INF of user[%d] to [%d]\n", pMsgReadyInfo->body.id, i);
@@ -477,32 +524,66 @@ void handMsg(char* buffer, int len)
         //
         if(game.isCardsProduced == false)
         {
-            giveOutCard(5, 2);
+            giveOutCard(UserNum, 2);
             game.isCardsProduced = true;
         }
         sendCardsInfo(sendbuf, id);
+
+        if(getReadyCount()==UserNum)
+        {
+            sendWhoIsNext(sendbuf,0);
+        }
     }
     else if(SHOW_CARDS_INFO == type)
     {
         msgCardsInfo *pReceiveMsg = (msgCardsInfo *)buffer;
         id = pReceiveMsg->body.id;
-        printf("receive SHOW_CARDS_INFO id = %d\n", pReceiveMsg->body.id);
-        
+        printf("receive dddd SHOW_CARDS_INFO id = %d\n", pReceiveMsg->body.id);
+
+        skrobot::StaticAnalyserC AnaCurrent;
+        bool validCards = isValidCards(&pReceiveMsg->body.cards, pReceiveMsg->body.size, &AnaCurrent);
+
+        if(pReceiveMsg->body.size!=0)
+        {
+            if(validCards == false)
+            {
+                printf("isValidCards return false\n");
+                return;
+            }
+
+            if(game.who_play_newest != id && game.preCardsLen!=0 && AnaCurrent.IsBiggerThan(&game.preCardsAna) == false)
+            {
+                printf("IsBiggerThan return false\n");
+                return;
+            }
+        }
+
+        if(pReceiveMsg->body.size==0)
+        {
+            int nextUser = getNextUser(id);
+            if (game.who_play_newest == nextUser) /*没人要牌*/
+            {
+                game.user[nextUser].score += game.round_score; 
+                sendUserScore(sendbuf,nextUser);
+                game.round_score = 0;
+                sendRoundScore(sendbuf, game.round_score);
+            }
+        }
+
+
         if(pReceiveMsg->body.size>0)
         {
-            if (game.who_play_newest == id) /*没人要，自己要了*/
-            {
-                game.user[id].score += game.round_score; 
-                sendUserScore(sendbuf,id);
-                game.round_score = 0;
-            }
+
             game.who_play_newest = id;
+            game.preCardsAna = AnaCurrent;
+            game.preCardsLen = len;
+            memcpy(game.preCards, &pReceiveMsg->body.cards, len*sizeof(short));
         }
+        
         // 更新该用户的cars
-        // users[id].cards =......;DifferenceUserCards(i, , )
         differenceCards(id, &pReceiveMsg->body.cards, pReceiveMsg->body.size);
         //转发给所有人
-        for (int i = 0; i < MAX_USER_COUNT; i++)
+        for (int i = 0; i < UserNum; i++)
         {
             if (users[i].login == false) continue;
             //if (users[i].GameStatus == false) continue;
@@ -510,7 +591,7 @@ void handMsg(char* buffer, int len)
             sendto(sockSer, buffer, len, 0, (struct sockaddr*)&users[i].sock, addrlen);    //向客户端发送数据
         }  
 
-        sendWhoIsNext(sendbuf,(id+1)%MAX_USER_COUNT);
+        sendWhoIsNext(sendbuf,getNextUser(id));
 
         int sum = getCardsScore(&pReceiveMsg->body.cards, pReceiveMsg->body.size);
         if(sum!=0)
@@ -527,11 +608,16 @@ void handMsg(char* buffer, int len)
 }
 
 
-int main()
+int main(int argc, char* argv[])
 {
     restartGame();
-    skrobot::StaticAnalyserC target;
     
+    if(argc>1)
+    {
+        UserNum = atoi(argv[1]);
+    }
+    printf("UserNum = [%d]\n",UserNum);
+
     sockSer = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockSer == -1)
         perror("socket");
@@ -552,6 +638,7 @@ int main()
 
     while (1)
     {
+        printf("wait receive.........\n");
         int len = recvfrom(sockSer, recvbuf, 256, 0, (struct  sockaddr*)&addrCli, &addrlen);     //从指定地址接收客户端数据
         printf("Cli:>receive, len=%d\n", len);
         handMsg(recvbuf, len);

@@ -28,13 +28,13 @@ $(ODIR)/%.o:$(SRC)/%.cc
 main:
 	g++  openSource/src/common.cc openSource/src/history_keeper.cc openSource/src/static_analyser.cc  main.cpp -o main -I openSource/include -I openSource/src -std=c++11
 
-test:$(OBJ)
-	$(CC) -o $(BIN)/$@ $^ $(CFLAGS) && ./$(BIN)/$@
+test:
+	g++  openSource/src/common.cc openSource/src/history_keeper.cc openSource/src/static_analyser.cc openSource/test/main.cc openSource/test/test_static_analyser.cc -o test -I openSource/include -I openSource/src -std=c++11
 
 .PHONY:clean
 
 clean:
-	rm -rf $(OBJ)
+	rm -rf main test
 
 .PHONY:doc
 
